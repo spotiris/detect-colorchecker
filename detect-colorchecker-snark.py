@@ -7,7 +7,7 @@ import keras
 import numpy as np
 
 from keras_applications.mobilenet_v2 import preprocess_input
-# from snark.imaging import cv_image
+from snark.imaging import cv_image
 
 def load_model(src_dir):
     from keras.models import model_from_json
@@ -18,30 +18,22 @@ def load_model(src_dir):
     return model
 
 
-def filesystem_gen(stream=sys.stdin, output_shape=None):
-    from PIL import Image
-    for line in stream:
-        line = line.strip()
-        image = Image.open(line)
-        if output_shape is not None:
-            image = image.resize(output_shape[:2])
-        image = np.array(image)
-        yield line, image
-
+def cv_cat_gen(stream=sys.stdin.buffer):
+  for pair in cv_image.iterator(stream):
+      yield pair.header, pair.data
 
 def do_predict(model, batch, batch_headers, batch_size):
     images = preprocess_input(np.array(batch, dtype=np.float32))
     predicted = model.predict(images)[..., 1]
     for head, pred in zip(batch_headers, predicted):
-        print("{:s},{:.2f}".format(str(head), pred), file=sys.stdout)
-
+        print("{:s},{:.2f}".format(head[0].item().strftime('%Y%m%dT%H%M%S.%f'), pred), file=sys.stdout)
 
 def main(args):
     print("Loading model:", args.model_dir, file=sys.stderr)
     model = load_model(src_dir=args.model_dir)
     batch = []
     batch_headers = []
-    for header, image in filesystem_gen(output_shape=args.input_shape):
+    for header, image in cv_cat_gen():
         # print("<<", header, file=sys.stderr)
         batch.append(image)
         batch_headers.append(header)
@@ -49,7 +41,7 @@ def main(args):
             do_predict(model, batch, batch_headers, args.batch_size)
             batch = []
             batch_headers = []
-        sys.stdout.flush()
+            sys.stdout.flush()
     if batch: # leftovers
         do_predict(model, batch, batch_headers, args.batch_size)
 
