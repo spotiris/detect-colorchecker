@@ -5,9 +5,17 @@ import sys
 
 import keras
 import numpy as np
+import cv2
 
-from keras_applications.mobilenet_v2 import preprocess_input
+import PIL
 from snark.imaging import cv_image
+from skimage.io import imsave
+
+def resize(image, output_shape):
+    """Fast resize using PIL (ensure pillow-simd is installed instead of pillow)"""
+    image = PIL.Image.fromarray(image)
+    image = image.resize(output_shape[:2])
+    return np.array(image)
 
 def load_model(src_dir):
     from keras.models import model_from_json
@@ -18,32 +26,44 @@ def load_model(src_dir):
     return model
 
 
-def cv_cat_gen(stream=sys.stdin.buffer):
-  for pair in cv_image.iterator(stream):
-      yield pair.header, pair.data
+def cv_cat_gen(args, stream=sys.stdin.buffer):
+    for pair in cv_image.iterator(stream):
+        image = pair.data
+        # image = image[:2824, ...]
+        if args.bayer == 'BG':
+            image = cv2.cvtColor(image, cv2.COLOR_BAYER_BG2BGR)
+        elif args.bayer:
+            raise ValueError("Unknown bayer value")
+        # image = (image.astype(np.float32) * 0.007).astype(np.uint8)
+        if image.shape[:2] != args.input_shape:
+            image = resize(image, args.input_shape[:2])
+        yield pair.header, image
 
-def do_predict(model, batch, batch_headers, batch_size):
-    images = preprocess_input(np.array(batch, dtype=np.float32))
-    predicted = model.predict(images)[..., 1]
-    for head, pred in zip(batch_headers, predicted):
-        print("{:s},{:.2f}".format(head[0].item().strftime('%Y%m%dT%H%M%S.%f'), pred), file=sys.stdout)
+def do_predict(model, batch, batch_headers, args):
+    images = np.array(batch, dtype=np.uint8)
+    predicted = model.predict(images).argmax(-1)
+    for head, pred, image in zip(batch_headers, predicted, images):
+        timestamp_str = head[0].item().strftime('%Y%m%dT%H%M%S.%f')
+        print("{:s},{:.2f}".format(timestamp_str, pred), file=sys.stdout)
+        if pred > args.output_confidence > 0:
+            imsave(timestamp_str + ".jpg", image)
 
 def main(args):
     print("Loading model:", args.model_dir, file=sys.stderr)
     model = load_model(src_dir=args.model_dir)
     batch = []
     batch_headers = []
-    for header, image in cv_cat_gen():
-        # print("<<", header, file=sys.stderr)
+    for header, image in cv_cat_gen(args):
+        print("<<", header, file=sys.stderr)
         batch.append(image)
         batch_headers.append(header)
         if len(batch) == args.batch_size:
-            do_predict(model, batch, batch_headers, args.batch_size)
+            do_predict(model, batch, batch_headers, args)
             batch = []
             batch_headers = []
             sys.stdout.flush()
     if batch: # leftovers
-        do_predict(model, batch, batch_headers, args.batch_size)
+        do_predict(model, batch, batch_headers, args)
 
 def get_args():
     '''Get args from the command line args'''
@@ -52,6 +72,11 @@ def get_args():
     parser.add_argument("model_dir", type=str, help="The directory that houses model.json and weights.h5")
     parser.add_argument("--batch-size", type=int, help="Batch size to use on GPU, higher gives slightly more performance", default=10)
     parser.add_argument("--input-shape", type=str, help="Model input shape in CSV format (default '224,224,3').", default="224,224,3")
+    parser.add_argument("--bayer", type=str, help="Debayer raw image {BG}")
+    parser.add_argument(
+        "--output-confidence",
+        type=float, default=-1,
+        help="Output images with confidence greater than this. -1 means don't output (default).")
     args = parser.parse_args()
     args.input_shape = tuple([int(i) for i in args.input_shape.split(",")])
     return args
