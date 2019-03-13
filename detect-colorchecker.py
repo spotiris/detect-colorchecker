@@ -6,6 +6,8 @@ import sys
 import keras
 import numpy as np
 
+from keras_applications.mobilenet_v2 import preprocess_input
+
 def load_model(src_dir):
     from keras.models import model_from_json
     with open(os.path.join(src_dir, "model.json"), "r") as file:
@@ -27,7 +29,8 @@ def filesystem_gen(stream=sys.stdin, output_shape=None):
 
 
 def do_predict(model, batch, batch_headers, batch_size):
-    predicted = model.predict(batch)[..., 1].argmax(-1)
+    images = preprocess_input(np.array(batch, dtype=np.float32))
+    predicted = model.predict(images)[..., 1]
     for head, pred in zip(batch_headers, predicted):
         print("{:s},{:.2f}".format(str(head), pred), file=sys.stdout)
 
